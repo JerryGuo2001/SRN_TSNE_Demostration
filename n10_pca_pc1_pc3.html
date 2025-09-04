@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive t-SNE Projection Colored by Node Count</title>
+    <script src="https://d3js.org/d3.v6.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.21.1/cytoscape.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .container {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            gap: 20px;
+        }
+        #scatterplot {
+            width: 800px;
+            height: 600px;
+            border: 1px solid black;
+            background-color: white;
+        }
+        #graph-container {
+            width: 800px;
+            height: 600px;
+            border: 1px solid black;
+            margin-top: 20px;
+            background-color: white;
+        }
+        #info-container {
+            width: 300px;
+            padding: 10px;
+            border: 1px solid black;
+            background-color: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+    <h1>Interactive t-SNE Projection Colored by Node Count</h1>
+    <div class="container">
+        <div>
+            <svg id="scatterplot"></svg>
+            <h2>Graph Structure</h2>
+            <div id="graph-container"></div>
+        </div>
+        <div id="info-container">
+            <h2>Graph Info</h2>
+            <div id="info"></div>
+        </div>
+    </div>
+    
+    <script>
+    async function loadJSON() {
+        const response = await fetch('graph_dataset_n10_pca_tsne_5000.json'); // Load JSON file
+        const data = await response.json();
+        return data;
+    }
+
+    function drawScatterPlot(data) {
+        const width = 800, height = 600;
+        const svg = d3.select("#scatterplot")
+                    .attr("width", width)
+                    .attr("height", height);
+
+        // Use PC1 and PC3 for the scatter plot
+        const xScale = d3.scaleLinear().domain(d3.extent(data, d => d["PC1"])).range([50, width - 50]);
+        const yScale = d3.scaleLinear().domain(d3.extent(data, d => d["PC3"])).range([height - 50, 50]);
+
+        // Create a color scale based on node_count
+        const colorScale = d3.scaleOrdinal(d3.schemeCategory10);
+        
+        // Get unique node_count values for the legend
+        const uniqueNodeCounts = [...new Set(data.map(d => d["node_count"]))];
+
+        // Add X and Y axes
+        svg.append("g")
+        .attr("transform", `translate(0, ${height - 50})`)
+        .call(d3.axisBottom(xScale));
+
+        svg.append("g")
+        .attr("transform", `translate(50, 0)`)
+        .call(d3.axisLeft(yScale));
+
+        // Draw the circles with color based on node_count
+        svg.selectAll("circle")
+        .data(data)
+        .enter().append("circle")
+        .attr("cx", d => xScale(d["PC1"]))  // Use PC1 for the x-axis
+        .attr("cy", d => yScale(d["PC3"]))  // Use PC3 for the y-axis
+        .attr("r", 2)
+        .attr("fill", d => colorScale(d["node_count"]))  // Color based on node_count
+        .style("cursor", "pointer")
+        .on("click", function(event, d) {
+                let graphStructure = d.graph_structure;
+                if (typeof graphStructure === "string") {
+                    graphStructure = JSON.parse(graphStructure); // Convert from string if necessary
+                }
+                drawGraph(graphStructure);
+                displayGraphInfo(d);
+        });
+
+        // Add the legend
+        const legend = svg.append("g")
+                        .attr("transform", `translate(${width - 150}, 20)`);
+
+        legend.selectAll("rect")
+            .data(uniqueNodeCounts)
+            .enter().append("rect")
+            .attr("x", 0)
+            .attr("y", (d, i) => i * 20)
+            .attr("width", 18)
+            .attr("height", 18)
+            .style("fill", d => colorScale(d));
+
+        legend.selectAll("text")
+            .data(uniqueNodeCounts)
+            .enter().append("text")
+            .attr("x", 25)
+            .attr("y", (d, i) => i * 20 + 9)
+            .attr("dy", ".35em")
+            .text(d => `Node Count: ${d}`)
+            .style("font-size", "12px");
+    }
+
+    function drawGraph(graphStructure) {
+        const elements = [];
+        const size = Math.sqrt(graphStructure.length);
+        
+        for (let i = 0; i < size; i++) {
+            elements.push({ data: { id: `n${i}` } });
+        }
+        
+        for (let i = 0; i < size; i++) {
+            for (let j = 0; j < size; j++) {
+                if (graphStructure[i * size + j] === 1) {
+                    elements.push({ data: { source: `n${i}`, target: `n${j}` } });
+                }
+            }
+        }
+        
+        // Count the number of edges
+        const edgeCount = elements.filter(element => element.data.source && element.data.target).length;
+
+        // Calculate number of nodes (unique node IDs)
+        const nodeCount = new Set(elements.map(element => element.data.id)).size;
+
+        // Calculate maximum number of edges for an undirected graph (complete graph)
+        const maxEdges = nodeCount * (nodeCount - 1) / 2;
+
+        // Calculate edge density (actual edges / maximum edges)
+        const edgeDensity = edgeCount / maxEdges;
+
+        // Dynamically calculate nodeRepulsion based on edge density
+        let nodeRepulsion = 250000000;  // Default value for sparse graphs
+
+        // Scale nodeRepulsion based on edge density
+        if (edgeDensity > 0.75) {  // Very dense graph
+            nodeRepulsion = 100000000;  // Increase repulsion for very dense graphs
+        } else if (edgeDensity > 0.5) {  // Moderately dense graph
+            nodeRepulsion = 7500000;  // Moderate repulsion for moderate edge density
+        } else if (edgeDensity > 0.25) {  // Less dense graph
+            nodeRepulsion = 500000;  // Default value for less dense graphs
+        } else {  // Very sparse graph
+            nodeRepulsion = 250000;  // Low repulsion for very sparse graphs
+        }
+
+        // Now, use the dynamic nodeRepulsion in the Cytoscape setup
+        cytoscape({
+            container: document.getElementById('graph-container'),
+            elements: elements,
+            style: [
+                { selector: 'node', style: { 
+                    'width': '20px', 
+                    'height': '20px', 
+                    'background-color': 'blue', 
+                    'label': 'data(id)' 
+                }},
+                { selector: 'edge', style: { 
+                    'line-color': 'gray', 
+                    'width': 2 
+                }}
+            ],
+            layout: { 
+                name: 'cose',               // Layout type (can change to 'grid', 'circle', etc.)
+                nodeRepulsion: nodeRepulsion,    // Use the dynamically calculated nodeRepulsion
+                idealEdgeLength: 0,          // Set ideal distance between nodes connected by edges
+                gravity: 0.25,               // Control the pull of nodes towards the center
+                animate: true                // Enable animation for the layout change
+            }
+        });
+
+    }
+
+    function displayGraphInfo(data) {
+        let infoContainer = document.getElementById("info");
+        infoContainer.innerHTML = "";
+        
+        Object.entries(data).forEach(([key, value]) => {
+            if (key !== "graph_structure" && key !== "graph_id") {
+                let p = document.createElement("p");
+                p.textContent = `${key}: ${value}`;
+                infoContainer.appendChild(p);
+            }
+        });
+    }
+
+
+    loadJSON().then(data => drawScatterPlot(data));
+
+    </script>
+</body>
+</html>
